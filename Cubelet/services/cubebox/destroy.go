@@ -179,7 +179,9 @@ func (l *local) destroySandboxByBinary(ctx context.Context, sb *cubeboxstore.Cub
 	// SIGKILL it after /proc confirms it is still this sandbox's cube shim.
 	if pid := int(sb.Endpoint.Pid); pid != 0 && isCubeShimPid(pid, sb.ID) {
 		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			log.G(ctx).WithError(err).Warnf("kill shim %d of sandbox %s failed", pid, sb.ID)
+			// Don't detach a shim we couldn't kill: shims.Delete would drop it from
+			// containerd's management and orphan the shim (and its in-process VMM).
+			return fmt.Errorf("kill shim %d of sandbox %s: %w", pid, sb.ID, err)
 		}
 	}
 
@@ -189,10 +191,9 @@ func (l *local) destroySandboxByBinary(ctx context.Context, sb *cubeboxstore.Cub
 	return nil
 }
 
-// isCubeShimPid reports whether pid is the live cube shim serving sandboxID,
-// matching the "-id <sandboxID>" argument the shim is launched with. It guards
-// destroySandboxByBinary against signaling a recycled PID when the stored shim
-// PID is stale.
+// isCubeShimPid reports whether pid is the live cube shim serving sandboxID. It
+// guards destroySandboxByBinary against signaling a recycled PID when the stored
+// shim PID is stale.
 func isCubeShimPid(pid int, sandboxID string) bool {
 	p, err := procfs.NewProc(pid)
 	if err != nil {
@@ -202,8 +203,18 @@ func isCubeShimPid(pid int, sandboxID string) bool {
 	if err != nil {
 		return false
 	}
-	for _, arg := range cmdline {
-		if arg == sandboxID {
+	return cmdlineServesSandbox(cmdline, sandboxID)
+}
+
+// cmdlineServesSandbox matches the shim's "-id <sandboxID>" launch argument
+// specifically (rather than the id appearing as any token), so an unrelated
+// process that merely mentions the id in its cmdline is not mistaken for the shim.
+func cmdlineServesSandbox(cmdline []string, sandboxID string) bool {
+	for i, arg := range cmdline {
+		if arg == "-id" && i+1 < len(cmdline) && cmdline[i+1] == sandboxID {
+			return true
+		}
+		if arg == "-id="+sandboxID {
 			return true
 		}
 	}
