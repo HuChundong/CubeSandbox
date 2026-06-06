@@ -116,12 +116,14 @@ func (l *local) Destroy(ctx context.Context, opts *workflow.DestroyContext) (err
 	for _, ci := range sb.All() {
 		containers = append(containers, ci)
 	}
+	// A paused VM can't serve its runtime API; force it down out-of-band instead.
 	if sb.GetStatus().IsPaused() {
-
 		ctx = constants.WithSkipRuntimeAPI(ctx)
-		if _, err := l.localTask.Delete(ctx, &tasks.DeleteTaskRequest{
-			ContainerID: sb.ID,
-		}); err != nil {
+	}
+
+	if constants.SkipRuntimeAPI(ctx) {
+
+		if err := l.destroySandboxByBinary(ctx, sb); err != nil {
 			result = multierror.Append(result, fmt.Errorf("delete sandbox by binary failed: %w", err))
 		}
 	} else {
@@ -169,6 +171,22 @@ func (l *local) Destroy(ctx context.Context, opts *workflow.DestroyContext) (err
 	}
 	if er := result.ErrorOrNil(); er != nil {
 		return ret.Errorf(errorcode.ErrorCode_RemoveContainerFailed, "%s", er.Error())
+	}
+	return nil
+}
+
+// destroySandboxByBinary force-deletes a sandbox without using the shim's runtime
+// API: it SIGKILLs the shim (reaping the in-process VMM) and detaches it, letting
+// containerd's dead-shim cleanup reclaim the VM workdir and pause snapshot.
+func (l *local) destroySandboxByBinary(ctx context.Context, sb *cubeboxstore.CubeBox) error {
+	if pid := sb.Endpoint.Pid; pid != 0 {
+		if err := syscall.Kill(int(pid), syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			log.G(ctx).WithError(err).Warnf("kill shim %d of sandbox %s failed", pid, sb.ID)
+		}
+	}
+
+	if err := l.shims.Delete(ctx, sb.ID); err != nil && !errdefs.IsNotFound(err) {
+		return err
 	}
 	return nil
 }
