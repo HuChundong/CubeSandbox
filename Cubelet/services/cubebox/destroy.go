@@ -84,10 +84,6 @@ func (l *local) Destroy(ctx context.Context, opts *workflow.DestroyContext) (err
 		ctx = namespaces.WithNamespace(ctx, namespaces.Default)
 	}
 
-	if !sandboxDeletable(sb, opts.DestroyInfo.GetFilter()) {
-		return ret.Err(errorcode.ErrorCode_PreConditionFailed, "unmatched filter")
-	}
-
 	sb.GetStatus().Update(func(status cubeboxstore.Status) (cubeboxstore.Status, error) {
 		status.Removing = true
 		return status, nil
