@@ -179,8 +179,10 @@ func (l *local) Destroy(ctx context.Context, opts *workflow.DestroyContext) (err
 // API: it SIGKILLs the shim (reaping the in-process VMM) and detaches it, letting
 // containerd's dead-shim cleanup reclaim the VM workdir and pause snapshot.
 func (l *local) destroySandboxByBinary(ctx context.Context, sb *cubeboxstore.CubeBox) error {
-	if pid := sb.Endpoint.Pid; pid != 0 {
-		if err := syscall.Kill(int(pid), syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+	// The stored shim PID may be stale (shim already gone, PID recycled), so only
+	// SIGKILL it after /proc confirms it is still this sandbox's cube shim.
+	if pid := int(sb.Endpoint.Pid); pid != 0 && isCubeShimPid(pid, sb.ID) {
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			log.G(ctx).WithError(err).Warnf("kill shim %d of sandbox %s failed", pid, sb.ID)
 		}
 	}
@@ -189,6 +191,27 @@ func (l *local) destroySandboxByBinary(ctx context.Context, sb *cubeboxstore.Cub
 		return err
 	}
 	return nil
+}
+
+// isCubeShimPid reports whether pid is the live cube shim serving sandboxID,
+// matching the "-id <sandboxID>" argument the shim is launched with. It guards
+// destroySandboxByBinary against signaling a recycled PID when the stored shim
+// PID is stale.
+func isCubeShimPid(pid int, sandboxID string) bool {
+	p, err := procfs.NewProc(pid)
+	if err != nil {
+		return false
+	}
+	cmdline, err := p.CmdLine()
+	if err != nil {
+		return false
+	}
+	for _, arg := range cmdline {
+		if arg == sandboxID {
+			return true
+		}
+	}
+	return false
 }
 
 func sandboxDeletable(sb *cubeboxstore.CubeBox, filter *cubebox.CubeSandboxFilter) bool {

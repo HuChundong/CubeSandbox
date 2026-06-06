@@ -6,6 +6,7 @@ package cubebox
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -268,5 +269,22 @@ func TestSandboxDeletable(t *testing.T) {
 	filter = &cubebox.CubeSandboxFilter{LabelSelector: map[string]string{"app": ""}}
 	if sandboxDeletable(sb, filter) {
 		t.Error("Expected false, got true")
+	}
+}
+
+func TestIsCubeShimPid(t *testing.T) {
+	// The current process is its own best fixture: /proc/self/cmdline contains
+	// os.Args[0] verbatim, mirroring how the shim's "-id <sandboxID>" arg is matched.
+	self := os.Getpid()
+	if !isCubeShimPid(self, os.Args[0]) {
+		t.Errorf("expected pid %d to match its own argv[0] %q", self, os.Args[0])
+	}
+	if isCubeShimPid(self, "no-such-sandbox-id-token") {
+		t.Error("expected non-matching token to return false")
+	}
+	// A PID that cannot exist must never be treated as the shim (guards against
+	// SIGKILLing a recycled/unrelated PID when the stored shim PID is stale).
+	if isCubeShimPid(1<<30, "anything") {
+		t.Error("expected nonexistent pid to return false")
 	}
 }
